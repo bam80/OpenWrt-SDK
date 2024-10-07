@@ -1,0 +1,87 @@
+version: "3.8"
+
+services:
+
+  openwrt:
+    image: docker.io/openwrtorg/sdk
+    volumes:
+      - ./openwrt:/home/build/openwrt
+    environment:
+      CC: gcc
+      PATH: /usr/lib/ccache:$PATH
+    command: bash -c "
+      set -e ;
+
+      echo ;
+      read -p 'Press any key to start a build...' ;
+
+      export PATH=/usr/lib/ccache:$PATH ;
+      type gcc ;
+
+      CCACHE_DIR=.ccache ccache -zs ;
+
+      ./scripts/feeds update -a ;
+      ./scripts/feeds install -a ;
+
+      echo wget https://downloads.openwrt.org/releases/22.03.0-rc6/targets/ramips/mt76x8/config.buildinfo -O .config ;
+      echo sed -i -e /CONFIG_TARGET_DEVICE_/d -e 's/\(CONFIG_TARGET_ALL_PROFILES=\)y/\1=n/' -e /CONFIG_SDK/d .config ;
+      echo cat diffconfig.22.03 \>\> .config ;
+      cp diffconfig .config
+
+      echo time make -j $(($(nproc)+1)) defconfig download clean world ;
+      set -x ;
+      time ionice -c 3 nice -n19 make -j $(($(nproc)+1)) defconfig download clean world ;
+      CCACHE_DIR=.ccache staging_dir/host/bin/ccache -sz ;
+      set +x ;
+
+      echo ;
+      read -p 'Clean rebuild with filled ccache... (press a key)' ;
+      set -x ;
+      time ionice -c 3 nice -n19 make -j $(($(nproc)+1)) dirclean world ;
+      CCACHE_DIR=.ccache staging_dir/host/bin/ccache -s"
+      set +x ;
+
+    tty: true
+    init: true
+
+  sdk:
+    image: docker.io/openwrtorg/sdk:ramips-mt76x8-snapshot
+    volumes:
+      - ./openwrt/bin:/home/build/openwrt/bin
+      - /home/build/openwrt/feeds
+      - ./openwrt/diffconfig.sdk:/home/build/openwrt/diffconfig
+      - ./openwrt/.ccache:/home/build/openwrt/.ccache
+    environment:
+      CC: gcc
+      PATH: /usr/lib/ccache:$PATH
+    command: |
+      bash -c "
+      set -e
+
+      echo -e \"src-git modemfeed https://github.com/koshev-msk/modemfeed.git\n$(< feeds.conf.default)\" > feeds.conf.default ;
+      echo -e \"src-git sms https://github.com/bam80/packages\n$(< feeds.conf.default)\" > feeds.conf.default ;
+
+      echo https://openwrt.org/docs/guide-developer/toolchain/using_the_sdk#load_package_lists ;
+      echo ./scripts/feeds update -a ;
+      echo ./scripts/feeds install -a ;
+
+      ./scripts/feeds update ;
+      ./scripts/feeds install luci-app-atinout luci-app-modeminfo ;
+
+      cp diffconfig .config ;
+      make -j5 defconfig ;
+      sed -E 's/^(CONFIG_PACKAGE_.*=)./\1n/' .config -i ;
+      cat diffconfig >> .config ;
+
+      echo time make -j5 defconfig package/{luci-app-atinout,luci-app-modeminfo}/compile 
+
+      bash ;
+      "
+
+    tty: true
+    init: true
+
+  imagebuilder:
+    image: docker.io/openwrtorg/imagebuilder:ramips-mt76x8-snapshot
+    volumes:
+      - ./openwrt/bin:/home/build/openwrt/bin
